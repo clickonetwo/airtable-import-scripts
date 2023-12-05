@@ -1,9 +1,9 @@
 import {mergeSameHousehold, readAllHouseholds, canonicalizeHouseholdNames, writeAllHouseholds} from "./households.js";
 
 async function driver() {
-    const allRows = await readAllHouseholds('local/household-accounts.csv')
-    const goodRows = await canonicalizeHouseholdNames(allRows)
-    const households = await mergeSameHousehold(goodRows)
+    const rows = await readAllHouseholds('local/household-accounts.csv')
+    await canonicalizeHouseholdNames(rows)
+    const households = await mergeSameHousehold(rows)
     await writeAllHouseholds(households, 'local/household-contact-import.csv')
 }
 

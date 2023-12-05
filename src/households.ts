@@ -7,6 +7,8 @@ export interface InputRow {
     lastName: string,
     name: string,
     accountName: string,
+    fixNotes: string[],
+    ignoreNotes: string[],
 }
 
 export interface OutputRow {
@@ -14,6 +16,8 @@ export interface OutputRow {
     firstName: string,
     lastName: string,
     affiliatedNames: string,
+    accountName: string,
+    notes: string,
 }
 
 export type IndexedRows = { [accountName: string]: InputRow[] }
@@ -27,10 +31,12 @@ export async function readAllHouseholds(path: string) {
     })
     const rows: InputRow[] = records.map((r: { [x: string]: any }) => {
         return {
-            'firstName': r['First Name'].trim(),
-            'lastName': r['Last Name'].trim(),
-            'name': r['Name'].trim(),
-            'accountName': r['Account Name'].trim()
+            firstName: r['First Name'].trim(),
+            lastName: r['Last Name'].trim(),
+            name: r['Name'].trim(),
+            accountName: r['Account Name'].trim(),
+            fixNotes: [],
+            ignoreNotes: [],
         }
     })
     return rows
@@ -53,6 +59,8 @@ export async function writeAllHouseholds(households: IndexedRows, path: string) 
                 firstName: rows[i].firstName,
                 lastName: rows[i].lastName,
                 affiliatedNames: affiliatedNames.join(','),
+                accountName: rows[i].accountName,
+                notes: (rows[i].fixNotes.concat(rows[i].ignoreNotes)).join('; '),
             })
         }
     }
@@ -63,34 +71,35 @@ export async function writeAllHouseholds(households: IndexedRows, path: string) 
             { key: 'firstName', header: 'First Name' },
             { key: 'lastName', header: 'Last Name' },
             { key: 'affiliatedNames', header: 'Contact Affiliations' },
+            { key: 'accountName', header: 'Account Name' },
+            { key: 'notes', header: 'Notes' },
         ]
     })
     await fs.writeFile(path, data)
 }
 
 export async function canonicalizeHouseholdNames(rows: InputRow[]) {
-    let malformed: InputRow[] = []
-    let result: InputRow[] = []
     for (let row of rows) {
         let name = row.accountName
         let whereAmp = name.search(' & ')
         if (whereAmp != -1) {
             name = name.slice(0, whereAmp) + " and " + name.slice(whereAmp + 3)
+            row.fixNotes.push(`Converted '&' to 'and'`)
         }
         let whereSlash = name.search(' / ')
         if (whereSlash != -1) {
             name = name.slice(0, whereSlash) + " and " + name.slice(whereSlash + 3)
+            row.fixNotes.push(`Converted '/' to 'and'`)
         }
-        if (name.endsWith(' Household')) {
+        if (name.search(/Account|Foundation/) != -1) {
+            row.ignoreNotes.push(`Ignoring household name with 'Account' or 'Foundation'`)
+        } else if (name.endsWith(' Household')) {
             row.accountName = name.slice(0, name.length - 10).trim()
-            result.push(row)
+            row.fixNotes.push(`Trimmed 'Household' from end`)
         } else {
-            malformed.push(row)
+            row.ignoreNotes.push(`Ignoring badly-formatted household name`)
         }
     }
-    console.log(`Removed ${malformed.length} rows with badly formatted household names:`)
-    malformed.map((r) => console.log(`  ${r.accountName}`))
-    return result
 }
 
 export async function mergeSameHousehold(rows: InputRow[]) {
@@ -110,17 +119,19 @@ export async function mergeSameHousehold(rows: InputRow[]) {
         const rows = households[name]
         if (where === -1) {
             if (rows.length !== 1) {
-                console.log(`Warning: ${rows.length} contacts in this household: ${name}`)
+                rows[0].fixNotes.push(`Warning: ${rows.length} contacts in this household: ${name}`)
             }
         } else {
             if (name.slice(where + 5).search(' and ') != -1) {
-                console.log(`Can't handle household ${name} - too many ands!`)
+                rows[0].ignoreNotes.push(`Ignoring because too many 'ands'!`)
                 continue
             }
-            if (rows.length == 1) {
+            if (rows.length == 1 && rows[0].ignoreNotes.length == 0) {
                 const first = name.slice(0, where).toLowerCase()
                 if (first != rows[0].firstName.toLowerCase() && first != rows[0].name.toLowerCase()) {
                     maybeCreateContact(name, rows, where)
+                } else {
+                    rows[0].ignoreNotes.push(`Ignoring because the same contact appears twice`)
                 }
             }
         }
@@ -134,7 +145,7 @@ function maybeCreateContact(household: string, rows: InputRow[], where: number) 
     let whereContact = household.search(contactName)
     let whereContactFirst = household.search(contactFirstName)
     if (whereContact === -1 && whereContactFirst === -1) {
-        console.log(`Household ${household} has only contact ${contactName}`)
+        rows[0].ignoreNotes.push(`Ignoring because contact doesn't appear in household!`)
     } else if (whereContact > where || whereContactFirst > where) {
         // create contact from name before and
         const before = household.slice(0, where).trim()
@@ -149,22 +160,22 @@ function maybeCreateContact(household: string, rows: InputRow[], where: number) 
 function createContact(household: string, name: string, lastName: string) {
     const names = name.split(' ', 2)
     if (names.length == 2) {
-        let row: InputRow = {
+        return {
             firstName: names[0],
             lastName: names[1],
             name: name,
             accountName: household,
+            fixNotes: [`Created contact ${name}`],
+            ignoreNotes: [],
         }
-        console.log(`Created contact ${name} for household ${household}`)
-        return row
     } else {
-        let row: InputRow = {
+        return {
             firstName: name,
             lastName: lastName,
             name: `${name} ${lastName}`,
             accountName: household,
+            fixNotes: [`Created contact ${name} ${lastName}`],
+            ignoreNotes: [],
         }
-        console.log(`Created contact ${name} ${lastName} for household ${household}`)
-        return row
     }
 }

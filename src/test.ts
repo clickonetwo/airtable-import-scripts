@@ -15,25 +15,26 @@ async function testLoadHouseholds(path: string = "local/household-accounts.csv")
 }
 
 async function testStripHouseholdSuffix(rows: InputRow[]) {
-    const result = await canonicalizeHouseholdNames(rows)
-    assert(rows.length - result.length === 23)
-    return result
+    await canonicalizeHouseholdNames(rows)
 }
 
 async function testAll(...tests: string[]) {
     if (tests.length == 0) {
-        tests = ['strip', 'merge', 'output']
+        tests = ['input', 'strip', 'merge', 'output']
     }
-    let rows = await testLoadHouseholds()
-    let households: IndexedRows = {}
+    let rows: InputRow[] = []           // should really be test data
+    let households: IndexedRows = {}    // should really be test data
+    if (tests.includes('input')) {
+        rows = await testLoadHouseholds()
+    }
     if (tests.includes('strip')) {
-        rows = await testStripHouseholdSuffix(rows)
+        await testStripHouseholdSuffix(rows)
     }
     if (tests.includes('merge')) {
         households = await mergeSameHousehold(rows)
     }
     if (tests.includes('output')) {
-        writeAllHouseholds(households, 'local/household-contact-import.csv')
+        await writeAllHouseholds(households, 'local/household-contact-import.csv')
     }
 }
 
