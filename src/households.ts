@@ -122,13 +122,18 @@ export async function mergeSameHousehold(rows: InputRow[]) {
                 rows[0].fixNotes.push(`Warning: ${rows.length} contacts in this household: ${name}`)
             }
         } else {
+            if (name == rows[0].name || rows[0].name.search(/ and | & | \/ /) != -1) {
+                rows[0].ignoreNotes.push(`Ignoring because existing contact has a suspicious name`)
+                continue
+            }
             if (name.slice(where + 5).search(' and ') != -1) {
                 rows[0].ignoreNotes.push(`Ignoring because too many 'ands'!`)
                 continue
             }
             if (rows.length == 1 && rows[0].ignoreNotes.length == 0) {
                 const first = name.slice(0, where).toLowerCase()
-                if (first != rows[0].firstName.toLowerCase() && first != rows[0].name.toLowerCase()) {
+                const second = name.slice(where + 5, name.length - (rows[0].lastName.length + 1)).toLowerCase() // +1 for space
+                if (first != second || (first != rows[0].firstName.toLowerCase() && first != rows[0].name.toLowerCase())) {
                     maybeCreateContact(name, rows, where)
                 } else {
                     rows[0].ignoreNotes.push(`Ignoring because the same contact appears twice`)
