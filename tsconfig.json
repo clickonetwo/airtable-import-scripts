@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": false,
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2022", "dom"], // dom needed for fetch Response used by airtable
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "outDir": "dist",
+  },
+  "include": [
+    "src/**/*"
+  ],
+}

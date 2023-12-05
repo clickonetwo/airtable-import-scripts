@@ -1,0 +1,23 @@
+{
+  "name": "airtable-import-scripts",
+  "version": "1.0.0",
+  "description": "Import CSV data into an airtable database",
+  "author": "dan@clickonetwo.io",
+  "license": "AGPL v3",
+  "type": "module",
+  "engines": {
+    "node": "20.x"
+  },
+  "main": "dist/driver.js",
+  "scripts": {
+    "prebuild": "node_modules/.bin/eslint",
+    "build": "tsc",
+    "start": "node dist/driver.js",
+    "test": "node dist/test.js"
+  },
+  "dependencies": {
+    "airtable": "^0.12.2",
+    "csv-parse": "^5.5.2",
+    "csv-stringify": "^6.4.4"
+  }
+}
