@@ -1,6 +1,7 @@
 import { parse } from 'csv-parse/sync'
 import { stringify } from 'csv-stringify/sync'
 import { promises as fs } from 'fs'
+import {Contact, IndexedContacts, updateAffiliates} from "./contacts.js";
 
 export interface InputRow {
     firstName: string,
@@ -9,6 +10,8 @@ export interface InputRow {
     accountName: string,
     fixNotes: string[],
     ignoreNotes: string[],
+    airtableContact?: Contact
+    affiliatedNames?: string[]
 }
 
 export interface OutputRow {
@@ -22,7 +25,7 @@ export interface OutputRow {
 
 export type IndexedRows = { [accountName: string]: InputRow[] }
 
-export async function readAllHouseholds(path: string) {
+export async function readAllHouseholds(contacts: IndexedContacts, path: string) {
     const data = await fs.readFile(path)
     const records: { [n: string]: any } = parse(data, {
         columns: true,
@@ -30,14 +33,23 @@ export async function readAllHouseholds(path: string) {
         skipRecordsWithError: true,
     })
     const rows: InputRow[] = records.map((r: { [x: string]: any }) => {
-        return {
+        const name = r['Name'].trim()
+        let accountName = r['Account Name'].trim()
+        const row: InputRow = {
             firstName: r['First Name'].trim(),
             lastName: r['Last Name'].trim(),
-            name: r['Name'].trim(),
-            accountName: r['Account Name'].trim(),
+            name,
+            accountName,
             fixNotes: [],
             ignoreNotes: [],
         }
+        const contact = contacts[name.toLowerCase()]
+        if (contact) {
+            row.airtableContact = contact
+        } else {
+            row.ignoreNotes.push(`No matching Airtable contact`)
+        }
+        return row
     })
     return rows
 }
@@ -46,21 +58,15 @@ export async function writeAllHouseholds(households: IndexedRows, path: string) 
     const result: OutputRow[] = []
     for (let name in households) {
         const rows = households[name]
-        for (let i = 0; i < rows.length; i++) {
-            const affiliatedNames: string[] = []
-            for (let j = 0; j < rows.length; j++) {
-                if (j === i) {
-                    continue
-                }
-                affiliatedNames.push(rows[j].name)
-            }
+        for (const row of rows) {
+            const affiliatedNames: string[] = row.affiliatedNames || []
             result.push({
-                name: rows[i].name,
-                firstName: rows[i].firstName,
-                lastName: rows[i].lastName,
+                name: row.name,
+                firstName: row.firstName,
+                lastName: row.lastName,
                 affiliatedNames: affiliatedNames.join(','),
-                accountName: rows[i].accountName,
-                notes: (rows[i].fixNotes.concat(rows[i].ignoreNotes)).join('; '),
+                accountName: row.accountName,
+                notes: row.fixNotes.concat(row.ignoreNotes).join('; '),
             })
         }
     }
@@ -92,17 +98,16 @@ export async function canonicalizeHouseholdNames(rows: InputRow[]) {
             row.fixNotes.push(`Converted '/' to 'and'`)
         }
         if (name.search(/Account|Foundation/) != -1) {
-            row.ignoreNotes.push(`Ignoring household name with 'Account' or 'Foundation'`)
+            row.ignoreNotes.push(`Can't guess affiliates for accounts or foundations`)
         } else if (name.endsWith(' Household')) {
             row.accountName = name.slice(0, name.length - 10).trim()
-            row.fixNotes.push(`Trimmed 'Household' from end`)
         } else {
-            row.ignoreNotes.push(`Ignoring badly-formatted household name`)
+            row.ignoreNotes.push(`Can't guess affiliates for organizations`)
         }
     }
 }
 
-export async function mergeSameHousehold(rows: InputRow[]) {
+export async function mergeSameHousehold(contacts: IndexedContacts, rows: InputRow[]) {
     let households: IndexedRows = {}
     let distinct = 0
     for (let row of rows) {
@@ -114,37 +119,73 @@ export async function mergeSameHousehold(rows: InputRow[]) {
         }
     }
     console.log(`There are ${distinct} households.`)
-    for (let name in households) {
-        const where = name.search(' and ')
-        const rows = households[name]
-        if (where === -1) {
-            if (rows.length !== 1) {
-                rows[0].fixNotes.push(`Warning: ${rows.length} contacts in this household: ${name}`)
-            }
-        } else {
-            if (name == rows[0].name || rows[0].name.search(/ and | & | \/ /) != -1) {
-                rows[0].ignoreNotes.push(`Ignoring because existing contact has a suspicious name`)
+    for (let household in households) {
+        const where = household.search(' and ')
+        const rows = households[household]
+        if (where !== -1) {
+            if (rows[0].ignoreNotes.length > 0) {
+                await addAffiliates(rows)
                 continue
             }
-            if (name.slice(where + 5).search(' and ') != -1) {
-                rows[0].ignoreNotes.push(`Ignoring because too many 'ands'!`)
+            if (household == rows[0].name || rows[0].name.search(/ and | & | \/ /) != -1) {
+                rows[0].ignoreNotes.push(`Can't guess at affiliates because contact is more than one person`)
+                await addAffiliates(rows)
                 continue
             }
-            if (rows.length == 1 && rows[0].ignoreNotes.length == 0) {
-                const first = name.slice(0, where).toLowerCase()
-                const second = name.slice(where + 5, name.length - (rows[0].lastName.length + 1)).toLowerCase() // +1 for space
-                if (first != second || (first != rows[0].firstName.toLowerCase() && first != rows[0].name.toLowerCase())) {
-                    maybeCreateContact(name, rows, where)
-                } else {
-                    rows[0].ignoreNotes.push(`Ignoring because the same contact appears twice`)
-                }
+            if (household.slice(where + 5).search(' and ') != -1) {
+                rows[0].ignoreNotes.push(`Can't guess at affiliates because household has multiple 'ands'`)
+                await addAffiliates(rows)
+                continue
             }
+            if (rows.filter(r => r.airtableContact !== undefined).length > 1) {
+                rows[0].ignoreNotes.push(`Not guessing affiliates because household already has them`)
+                await addAffiliates(rows)
+                continue
+            }
+            const first = household.slice(0, where).toLowerCase()
+            const lastNameLength = rows[0].lastName.length + 1  // including preceding space
+            const second = household.slice(where + 5, household.length - lastNameLength).toLowerCase()
+            if (first != second ||
+                (first != rows[0].firstName.toLowerCase() && first != rows[0].name.toLowerCase())) {
+                maybeCreateContact(contacts, household, rows, where)
+            } else {
+                rows[0].ignoreNotes.push(`Not guessing at affiliates it's a one-person household`)
+            }
+            await addAffiliates(rows)
         }
     }
     return households
 }
 
-function maybeCreateContact(household: string, rows: InputRow[], where: number) {
+async function addAffiliates(rows: InputRow[]) {
+    if (rows.length == 1) {
+        // Can't be any affiliates
+        return
+    }
+    for (let i = 0; i < rows.length; i++) {
+        if (rows[i].airtableContact === undefined) {
+            continue
+        }
+        const affiliatedIds: string[] = []
+        const affiliatedNames: string[] = []
+        for (let j = 0; j < rows.length; j++) {
+            if (j === i) {
+                continue
+            }
+            let contact = rows[j].airtableContact
+            if (contact) {
+                affiliatedIds.push(contact.id)
+                affiliatedNames.push(contact.name)
+            } else {
+                rows[i].fixNotes.push(`No contact for affiliate ${rows[j].name}`)
+            }
+        }
+        rows[i].affiliatedNames = affiliatedNames
+        await updateAffiliates(rows[i].airtableContact!, affiliatedIds)
+    }
+}
+
+function maybeCreateContact(contacts: IndexedContacts, household: string, rows: InputRow[], where: number) {
     let contactName = rows[0].name
     let contactFirstName = rows[0].firstName
     let whereContact = household.search(contactName)
@@ -152,35 +193,36 @@ function maybeCreateContact(household: string, rows: InputRow[], where: number) 
     if (whereContact === -1 && whereContactFirst === -1) {
         rows[0].ignoreNotes.push(`Ignoring because contact doesn't appear in household!`)
     } else if (whereContact > where || whereContactFirst > where) {
-        // create contact from name before and
+        // create contact from name before ' and '
         const before = household.slice(0, where).trim()
-        rows.splice(0, 0, createContact(household, before, rows[0].lastName))
+        rows.push(createContact(contacts, household, before, rows[0].lastName))
     } else {
-        // create contact from name after and
+        // create contact from name after ' and '
         const after = household.slice(where + 5).trim()
-        rows.splice(0, 0, createContact(household, after, rows[0].lastName))
+        rows.push(createContact(contacts, household, after, rows[0].lastName))
     }
 }
 
-function createContact(household: string, name: string, lastName: string) {
+function createContact(contacts: IndexedContacts, household: string, name: string, lastName: string) {
     const names = name.split(' ', 2)
+    let fullname: string
     if (names.length == 2) {
-        return {
-            firstName: names[0],
-            lastName: names[1],
-            name: name,
-            accountName: household,
-            fixNotes: [`Created contact ${name}`],
-            ignoreNotes: [],
-        }
+        fullname = name
     } else {
-        return {
-            firstName: name,
-            lastName: lastName,
-            name: `${name} ${lastName}`,
-            accountName: household,
-            fixNotes: [`Created contact ${name} ${lastName}`],
-            ignoreNotes: [],
-        }
+        fullname = `${name} ${lastName}`
+    }
+    let contact = contacts[fullname.toLowerCase()]
+    let fixNotes = [`Guessed affiliate contact ${fullname}`]
+    if (contact === undefined) {
+        fixNotes = [`WARNING: Guessed non-contact affiliate: ${fullname}`]
+    }
+    return {
+        firstName: name,
+        lastName: lastName,
+        name: fullname,
+        accountName: household,
+        fixNotes,
+        ignoreNotes: [],
+        airtableContact: contact
     }
 }

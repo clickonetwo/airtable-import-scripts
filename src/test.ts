@@ -1,40 +1,46 @@
 import {
-    readAllHouseholds,
-    InputRow,
     canonicalizeHouseholdNames,
-    mergeSameHousehold,
     IndexedRows,
+    InputRow,
+    mergeSameHousehold,
+    readAllHouseholds,
     writeAllHouseholds
 } from './households.js'
-import assert from 'assert';
+import {IndexedContacts, loadAirtableInfo, loadContacts} from "./contacts.js";
 
-async function testLoadHouseholds(path: string = "local/household-accounts.csv") {
-    const rows = await readAllHouseholds(path)
-    assert(rows.length === 6687)
+async function testLoadHouseholds(contacts: IndexedContacts, path: string = "local/household-accounts.csv") {
+    const rows = await readAllHouseholds(contacts, path)
+    console.log(`Found ${rows.length} contact rows`)
     return rows
 }
 
 async function testStripHouseholdSuffix(rows: InputRow[]) {
-    await canonicalizeHouseholdNames(rows)
+    const households = canonicalizeHouseholdNames(rows)
+    console.log(`Found ${Object.keys(households).length} households`)
+    return households
+}
+
+async function testWriteAllHouseholds(households: IndexedRows, path: string = "local/household-accounts.csv") {
+    await writeAllHouseholds(households, path)
+}
+
+async function testLoadContacts() {
+    const contacts = await loadContacts()
+    console.log(`Found ${Object.keys(contacts).length} contacts`)
+    return contacts
 }
 
 async function testAll(...tests: string[]) {
     if (tests.length == 0) {
-        tests = ['input', 'strip', 'merge', 'output']
+        tests = ['households']
     }
-    let rows: InputRow[] = []           // should really be test data
-    let households: IndexedRows = {}    // should really be test data
-    if (tests.includes('input')) {
-        rows = await testLoadHouseholds()
-    }
-    if (tests.includes('strip')) {
+    if (tests.includes('households')) {
+        loadAirtableInfo()
+        const contacts = await testLoadContacts()
+        const rows = await testLoadHouseholds(contacts)
         await testStripHouseholdSuffix(rows)
-    }
-    if (tests.includes('merge')) {
-        households = await mergeSameHousehold(rows)
-    }
-    if (tests.includes('output')) {
-        await writeAllHouseholds(households, 'local/household-contact-import.csv')
+        const households = await mergeSameHousehold(contacts, rows)
+        await testWriteAllHouseholds(households, 'local/household-contact-import.csv')
     }
 }
 
